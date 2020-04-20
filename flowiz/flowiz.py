@@ -56,7 +56,7 @@ def read_flow(path):
     return flow
 
 class FlowConverter():
-    def __init__(self, norm_factor=None, lower_bound=None, cmax=None, cmin=None):
+    def __init__(self, norm_factor=None, lower_bound=None, rmax=None, rmin=None):
         #TODO: Enforce typing on arguments
         """
         Bundling the flow conversion functions into a class to track a wider range
@@ -70,17 +70,17 @@ class FlowConverter():
             to, so that e.g. normalisation can be compared between 2 transformations
             or across a video
         lower_bound: the point at which lower values will be clipped to zero
-        cmax: sets an upper saturating bound on the magnitude of a flow, ensuring only
+        rmax: sets an upper saturating bound on the magnitude of a flow, ensuring only
             flows within a set range are expressed.
-        cmin: sets a lower saturating bound on the magnitude of a flow, ensuring only
+        rmin: sets a lower saturating bound on the magnitude of a flow, ensuring only
             flows within a set range are expressed.
         """
         self.norm = norm_factor
         self.eps = lower_bound
-        self.cmax = cmax
-        self.cmin = cmin
-        items = [cmax, cmin]
-        self.inv_rad = any([True if i is None else False for i in items])
+        self.rmax = rmax
+        self.rmin = rmin
+        items = [rmax, rmin]
+        self.inv_rad = any([False if i is None else True for i in items])
 
     def __call__(self, flow):
         return self._flow2color(flow)
@@ -176,7 +176,7 @@ class FlowConverter():
         item[mask] = scaled[mask]
         return item 
         
-    def _normalize_flow(self, flow):
+    def _normalize_flow(self, flow, raw_norm=False):
         UNKNOWN_FLOW_THRESH = 1e9
         # UNKNOWN_FLOW = 1e10
         eps = np.finfo(np.float32).eps
@@ -201,7 +201,7 @@ class FlowConverter():
         minu = max([999, np.min(u)])
         minv = max([999, np.min(v)])
 
-        rad = np.sqrt(np.multiply(u, u) + np.multiply(v, v))
+        rad = np.sqrt(u**2 + v**2)
         
         # Clip and bound image
 
@@ -214,15 +214,15 @@ class FlowConverter():
             # Handling to avoid introducing NaNs
             # TODO: make handling more efficient
             inv_rad = 1/(rad+eps)
-            if self.cmax:
-                maxmask = rad > self.cmax
-                irm = inv_rad * self.cmax
+            if self.rmax:
+                maxmask = rad > self.rmax
+                irm = inv_rad * self.rmax
                 u = self._bound_radius(u, maxmask, irm)
                 v = self._bound_radius(v, maxmask, irm)
 
-            if self.cmin:
-                minmask = rad > self.cmin
-                irm = inv_rad * self.cmin
+            if self.rmin:
+                minmask = rad < self.rmin
+                irm = inv_rad * self.rmin
                 u = self._bound_radius(u, minmask, irm)
                 v = self._bound_radius(v, minmask, irm)
         
@@ -232,6 +232,9 @@ class FlowConverter():
         else:
             maxrad = max([-1, np.max(rad)])
         
+        # Added to enable quick unit testing
+        if raw_norm:
+            return u, v
 
         if flags['debug']:
             print("Max Flow : {maxrad:.4f}. Flow Range [u, v] -> [{minu:.3f}:{maxu:.3f}, {minv:.3f}:{maxv:.3f}] ".format(
@@ -310,3 +313,51 @@ def convert_files(files, outdir=None, flowconverter=None):
             path = os.path.join(outdir, os.path.basename(f) + '.png')
             t.set_description(path)
             _save_png(image, path)
+
+if __name__ == "__main__":
+    # Quick function tests
+    # Values chosen arbitrarily
+    MAX = 100.
+    MIN = 50.
+    SCALING = 500.
+
+    get_flow = lambda: np.random.normal(0,MAX,(300,500,2))
+    flow = get_flow()
+    i = convert_from_flow(flow)
+    print("Code runs")
+
+    flow = get_flow()
+    fc = FlowConverter(rmax=MAX, rmin=MIN)
+    u, v = fc._normalize_flow(flow, True)
+    rad = np.sqrt(u**2 + v**2)
+
+    calcmax, calcmin = rad.max(), rad.min()
+    if not np.isclose(calcmax,MAX)&np.isclose(calcmin, MIN):
+        e = """
+        The normalization to have radius between {0} and {1} is not within tolerance.
+        MAXIMUMS - Specified: {1}, Observed: {3}
+        MINIMUMS - Specified: {0}, Observed: {2}
+        Please ensure the normalization code is correct
+        """.format(MIN, MAX, calcmin, calcmax)
+        raise ValueError(e)
+    
+    print("Radial scaling within tolerances.")
+
+    flow = get_flow()
+    fc = FlowConverter(norm_factor=SCALING)
+    u, v = fc._normalize_flow(flow)
+    rad = np.sqrt(u**2 + v**2)
+
+    std = np.std(np.concatenate((u,v)))
+
+    norm = MAX / SCALING
+    if not np.isclose(std, norm, 1e-3):
+        e = """
+        The normalization to map radius {0} to 1 has failed.
+        Expected standard deviation: {1}
+        Observed standard deviation: {2}
+        Please ensure normalization code is correct
+        """.format(SCALING, norm, std)
+        raise ValueError(e)
+    
+    print("Scaling value within tolerances")
