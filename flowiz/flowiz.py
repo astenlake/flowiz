@@ -55,173 +55,236 @@ def read_flow(path):
 
     return flow
 
+class FlowConverter():
+    def __init__(self, norm_factor=None, lower_bound=None, cmax=None, cmin=None):
+        #TODO: Enforce typing on arguments
+        """
+        Bundling the flow conversion functions into a class to track a wider range
+        of normalisation and transformation options.
 
-def _color_wheel():
-    # Original inspiration: http://members.shaw.ca/quadibloc/other/colint.htm
+        Note that conversions combining norm_factor+cmax, or lower_bound+cmin, may
+        have unintended edge cases. Please combine with caution.
 
-    RY = 15
-    YG = 6
-    GC = 4
-    CB = 11
-    BM = 13
-    MR = 6
+        Args:
+        norm_factor: specify the radial magnitude that colours will be normalized
+            to, so that e.g. normalisation can be compared between 2 transformations
+            or across a video
+        lower_bound: the point at which lower values will be clipped to zero
+        cmax: sets an upper saturating bound on the magnitude of a flow, ensuring only
+            flows within a set range are expressed.
+        cmin: sets a lower saturating bound on the magnitude of a flow, ensuring only
+            flows within a set range are expressed.
+        """
+        self.norm = norm_factor
+        self.eps = lower_bound
+        self.cmax = cmax
+        self.cmin = cmin
+        items = [cmax, cmin]
+        self.inv_rad = any([True if i is None else False for i in items])
 
-    ncols = RY + YG + GC + CB + BM + MR
+    def __call__(self, flow):
+        return self._flow2color(flow)
 
-    colorwheel = np.zeros([ncols, 3])  # RGB
+    def _color_wheel(self):
+        # Original inspiration: http://members.shaw.ca/quadibloc/other/colint.htm
 
-    col = 0
+        RY = 15
+        YG = 6
+        GC = 4
+        CB = 11
+        BM = 13
+        MR = 6
 
-    # RY
-    colorwheel[0:RY, 0] = 255
-    colorwheel[0:RY, 1] = np.floor(255*np.arange(0, RY, 1)/RY)
-    col += RY
+        ncols = RY + YG + GC + CB + BM + MR
 
-    # YG
-    colorwheel[col: YG + col, 0] = 255 - \
-        np.floor(255*np.arange(0, YG, 1)/YG)
-    colorwheel[col: YG + col, 1] = 255
-    col += YG
+        colorwheel = np.zeros([ncols, 3])  # RGB
 
-    # GC
-    colorwheel[col: GC + col, 1] = 255
-    colorwheel[col: GC + col, 2] = np.floor(255*np.arange(0, GC, 1)/GC)
-    col += GC
+        col = 0
 
-    # CB
-    colorwheel[col: CB + col, 1] = 255 - \
-        np.floor(255*np.arange(0, CB, 1)/CB)
-    colorwheel[col: CB + col, 2] = 255
-    col += CB
+        # RY
+        colorwheel[0:RY, 0] = 255
+        colorwheel[0:RY, 1] = np.floor(255*np.arange(0, RY, 1)/RY)
+        col += RY
 
-    # BM
-    colorwheel[col: BM + col, 2] = 255
-    colorwheel[col: BM + col, 0] = np.floor(255*np.arange(0, BM, 1)/BM)
-    col += BM
+        # YG
+        colorwheel[col: YG + col, 0] = 255 - \
+            np.floor(255*np.arange(0, YG, 1)/YG)
+        colorwheel[col: YG + col, 1] = 255
+        col += YG
 
-    # MR
-    colorwheel[col: MR + col, 2] = 255 - \
-        np.floor(255*np.arange(0, MR, 1)/MR)
-    colorwheel[col: MR + col, 0] = 255
+        # GC
+        colorwheel[col: GC + col, 1] = 255
+        colorwheel[col: GC + col, 2] = np.floor(255*np.arange(0, GC, 1)/GC)
+        col += GC
 
-    return colorwheel
+        # CB
+        colorwheel[col: CB + col, 1] = 255 - \
+            np.floor(255*np.arange(0, CB, 1)/CB)
+        colorwheel[col: CB + col, 2] = 255
+        col += CB
 
+        # BM
+        colorwheel[col: BM + col, 2] = 255
+        colorwheel[col: BM + col, 0] = np.floor(255*np.arange(0, BM, 1)/BM)
+        col += BM
 
-def _compute_color(u, v):
-    colorwheel = _color_wheel()
-    idxNans = np.where(np.logical_or(
-        np.isnan(u),
-        np.isnan(v)
-    ))
-    u[idxNans] = 0
-    v[idxNans] = 0
+        # MR
+        colorwheel[col: MR + col, 2] = 255 - \
+            np.floor(255*np.arange(0, MR, 1)/MR)
+        colorwheel[col: MR + col, 0] = 255
 
-    ncols = colorwheel.shape[0]
-    radius = np.sqrt(np.multiply(u, u) + np.multiply(v, v))
-    a = np.arctan2(-v, -u) / np.pi
-    fk = (a+1) / 2 * (ncols - 1)
-    k0 = fk.astype(np.uint8)
-    k1 = k0 + 1
-    k1[k1 == ncols] = 0
-    f = fk - k0
-
-    img = np.empty([k1.shape[0], k1.shape[1], 3])
-    ncolors = colorwheel.shape[1]
-
-    for i in range(ncolors):
-        tmp = colorwheel[:, i]
-        col0 = tmp[k0] / 255
-        col1 = tmp[k1] / 255
-        col = (1-f) * col0 + f * col1
-        idx = radius <= 1
-        col[idx] = 1 - radius[idx] * (1 - col[idx])
-        col[~idx] *= 0.75
-        img[:, :, i] = np.floor(255 * col).astype(np.uint8)  # RGB
-        # img[:, :, 2 - i] = np.floor(255 * col).astype(np.uint8) # BGR
-
-    return img.astype(np.uint8)
+        return colorwheel
 
 
-def _normalize_flow(flow):
-    UNKNOWN_FLOW_THRESH = 1e9
-    # UNKNOWN_FLOW = 1e10
-
-    height, width, nBands = flow.shape
-    if not nBands == 2:
-        raise AssertionError("Image must have two bands. [{h},{w},{nb}] shape given instead".format(
-            h=height, w=width, nb=nBands))
-
-    u = flow[:, :, 0]
-    v = flow[:, :, 1]
-
-    # Fix unknown flow
-    idxUnknown = np.where(np.logical_or(
-        abs(u) > UNKNOWN_FLOW_THRESH,
-        abs(v) > UNKNOWN_FLOW_THRESH
-    ))
-    u[idxUnknown] = 0
-    v[idxUnknown] = 0
-
-    maxu = max([-999, np.max(u)])
-    maxv = max([-999, np.max(v)])
-    minu = max([999, np.min(u)])
-    minv = max([999, np.min(v)])
-
-    rad = np.sqrt(np.multiply(u, u) + np.multiply(v, v))
-    maxrad = max([-1, np.max(rad)])
-
-    if flags['debug']:
-        print("Max Flow : {maxrad:.4f}. Flow Range [u, v] -> [{minu:.3f}:{maxu:.3f}, {minv:.3f}:{maxv:.3f}] ".format(
-            minu=minu, minv=minv, maxu=maxu, maxv=maxv, maxrad=maxrad
+    def _compute_color(self, u, v):
+        colorwheel = self._color_wheel()
+        idxNans = np.where(np.logical_or(
+            np.isnan(u),
+            np.isnan(v)
         ))
+        u[idxNans] = 0
+        v[idxNans] = 0
 
-    eps = np.finfo(np.float32).eps
-    u = u/(maxrad + eps)
-    v = v/(maxrad + eps)
+        ncols = colorwheel.shape[0]
+        radius = np.sqrt(np.multiply(u, u) + np.multiply(v, v))
+        a = np.arctan2(-v, -u) / np.pi
+        fk = (a+1) / 2 * (ncols - 1)
+        k0 = fk.astype(np.uint8)
+        k1 = k0 + 1
+        k1[k1 == ncols] = 0
+        f = fk - k0
 
-    return u, v
+        img = np.empty([k1.shape[0], k1.shape[1], 3])
+        ncolors = colorwheel.shape[1]
+
+        for i in range(ncolors):
+            tmp = colorwheel[:, i]
+            col0 = tmp[k0] / 255
+            col1 = tmp[k1] / 255
+            col = (1-f) * col0 + f * col1
+            idx = radius <= 1
+            col[idx] = 1 - radius[idx] * (1 - col[idx])
+            col[~idx] *= 0.75
+            img[:, :, i] = np.floor(255 * col).astype(np.uint8)  # RGB
+            # img[:, :, 2 - i] = np.floor(255 * col).astype(np.uint8) # BGR
+
+        return img.astype(np.uint8)
+
+    @staticmethod
+    def _bound_radius(item, mask, scaling_radius):
+        scaled = item * scaling_radius
+        item[mask] = scaled[mask]
+        return item 
+        
+    def _normalize_flow(self, flow):
+        UNKNOWN_FLOW_THRESH = 1e9
+        # UNKNOWN_FLOW = 1e10
+        eps = np.finfo(np.float32).eps
+        height, width, nBands = flow.shape
+        if not nBands == 2:
+            raise AssertionError("Image must have two bands. [{h},{w},{nb}] shape given instead".format(
+                h=height, w=width, nb=nBands))
+
+        u = flow[:, :, 0]
+        v = flow[:, :, 1]
+
+        # Fix unknown flow
+        idxUnknown = np.where(np.logical_or(
+            abs(u) > UNKNOWN_FLOW_THRESH,
+            abs(v) > UNKNOWN_FLOW_THRESH
+        ))
+        u[idxUnknown] = 0
+        v[idxUnknown] = 0
+
+        maxu = max([-999, np.max(u)])
+        maxv = max([-999, np.max(v)])
+        minu = max([999, np.min(u)])
+        minv = max([999, np.min(v)])
+
+        rad = np.sqrt(np.multiply(u, u) + np.multiply(v, v))
+        
+        # Clip and bound image
+
+        if self.eps:
+            mask = rad < self.eps
+            u[mask] = 0
+            v[mask] = 0
+        
+        if self.inv_rad:
+            # Handling to avoid introducing NaNs
+            # TODO: make handling more efficient
+            inv_rad = 1/(rad+eps)
+            if self.cmax:
+                maxmask = rad > self.cmax
+                irm = inv_rad * self.cmax
+                u = self._bound_radius(u, maxmask, irm)
+                v = self._bound_radius(v, maxmask, irm)
+
+            if self.cmin:
+                minmask = rad > self.cmin
+                irm = inv_rad * self.cmin
+                u = self._bound_radius(u, minmask, irm)
+                v = self._bound_radius(v, minmask, irm)
+        
+        # Set normalization scale
+        if self.norm:
+            maxrad = self.norm
+        else:
+            maxrad = max([-1, np.max(rad)])
+        
+
+        if flags['debug']:
+            print("Max Flow : {maxrad:.4f}. Flow Range [u, v] -> [{minu:.3f}:{maxu:.3f}, {minv:.3f}:{maxv:.3f}] ".format(
+                minu=minu, minv=minv, maxu=maxu, maxv=maxv, maxrad=maxrad
+            ))
+
+        u = u/(maxrad + eps)
+        v = v/(maxrad + eps)
+
+        return u, v
 
 
-def _flow2color(flow):
+    def _flow2color(self, flow):
 
-    u, v = _normalize_flow(flow)
-    img = _compute_color(u, v)
+        u, v = self._normalize_flow(flow)
+        img = self._compute_color(u, v)
 
-    # TO-DO
-    # Indicate unknown flows on the image
-    # Originally done as
-    #
-    # IDX = repmat(idxUnknown, [1 1 3]);
-    # img(IDX) = 0;
+        # TODO
+        # Indicate unknown flows on the image
+        # Originally done as
+        #
+        # IDX = repmat(idxUnknown, [1 1 3]);
+        # img(IDX) = 0;
 
-    return img
-
-
-def _flow2uv(flow):
-    u, v = _normalize_flow(flow)
-    uv = (np.dstack([u, v])*127.999+128).astype('uint8')
-    return uv
+        return img
 
 
-def _save_png(arr, path):
-    # TO-DO: No dependency
-    Image.fromarray(arr).save(path)
+    def _flow2uv(self, flow):
+        u, v = self._normalize_flow(flow)
+        uv = (np.dstack([u, v])*127.999+128).astype('uint8')
+        return uv
 
 
-def convert_from_file(path, mode='RGB'):
-    return convert_from_flow(read_flow(path), mode)
-
-
-def convert_from_flow(flow, mode='RGB'):
+def convert_from_flow(flow, mode='RGB', flowconverter=None):
+    if flowconverter is None:
+        flowconverter = FlowConverter()
     if mode == 'RGB':
-        return _flow2color(flow)
+        return flowconverter._flow2color(flow)
     if mode == 'UV':
-        return _flow2uv(flow)
+        return flowconverter._flow2uv(flow)
 
-    return _flow2color(flow)
+    return flowconverter._flow2color(flow)
 
 
-def convert_files(files, outdir=None):
+def convert_from_file(path, mode='RGB', flowconverter=None):
+    if flowconverter is None:
+        flowconverter = FlowConverter()
+    return convert_from_flow(read_flow(path), mode, flowconverter)
+
+
+def convert_files(files, outdir=None, flowconverter=None):
+    if flowconverter is None:
+        fc = FlowConverter()
     if outdir != None and not os.path.exists(outdir):
         try:
             os.makedirs(outdir)
@@ -229,10 +292,15 @@ def convert_files(files, outdir=None):
         except OSError as exc:
             if exc.errno != errno.EEXIST:
                 raise
+    
+    def _save_png(arr, path):
+        # TODO: No dependency
+        Image.fromarray(arr).save(path)
+
 
     t = tqdm(files)
     for f in t:
-        image = convert_from_file(f)
+        image = convert_from_file(f, flowconverter= flowconverter)
 
         if outdir == None:
             path = f + '.png'
